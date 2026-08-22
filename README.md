@@ -8,11 +8,15 @@ CI/CD pipelines:
 | **Jenkins** | [`Jenkinsfile`](Jenkinsfile) | Build → Test → Deploy to staging, with email notifications |
 | **GitHub Actions** | [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) | Install → Test → Build → Deploy to staging → Deploy to production |
 
+Screenshots of both pipelines actually executing are in
+**[`docs/screenshots/`](docs/screenshots/)**.
+
 ---
 
 ## Table of contents
 
 - [Application overview](#application-overview)
+- [Pipeline screenshots](#pipeline-screenshots)
 - [Running locally](#running-locally)
 - [Part 1 — Jenkins pipeline](#part-1--jenkins-pipeline)
   - [Prerequisites](#prerequisites)
@@ -28,6 +32,20 @@ CI/CD pipelines:
   - [Environments](#environments)
 - [Changes made to the upstream project](#changes-made-to-the-upstream-project)
 - [Troubleshooting](#troubleshooting)
+
+---
+
+## Pipeline screenshots
+
+[`docs/screenshots/`](docs/screenshots/) holds captures of real runs of both
+pipelines, with an index describing each one.
+
+| Jenkins | GitHub Actions |
+| --- | --- |
+| [Stage View: Build, Test, Deploy](docs/screenshots/jenkins-02-main-branch-job.png) | [All workflow runs](docs/screenshots/gha-01-workflow-runs.png) |
+| [Published JUnit results](docs/screenshots/jenkins-07-test-results.png) | [Push to `main`](docs/screenshots/gha-02-main-run.png) |
+| [Success and failure emails](docs/screenshots/jenkins-05-notification-emails.png) | [Deploy to staging](docs/screenshots/gha-03-staging-deploy-run.png) |
+| [Deployed staging app](docs/screenshots/jenkins-06-staging-app-live.png) | [Deploy to production on `v1.0.0`](docs/screenshots/gha-04-production-release-run.png) |
 
 ---
 
@@ -106,7 +124,7 @@ configuration-as-code Jenkins environment:
 | File | Purpose |
 | --- | --- |
 | [`jenkins/Dockerfile`](jenkins/Dockerfile) | Jenkins LTS + Python 3, venv, curl, git |
-| [`jenkins/plugins.txt`](jenkins/plugins.txt) | Pipeline, Git, GitHub, Email Extension, JUnit, JCasC, Job DSL |
+| [`jenkins/plugins.txt`](jenkins/plugins.txt) | Pipeline, Stage View, Git, GitHub, Email Extension, JUnit, JCasC, Job DSL |
 | [`jenkins/casc.yaml`](jenkins/casc.yaml) | Admin user, credentials, SMTP, and the pipeline job itself |
 | [`jenkins/docker-compose.yml`](jenkins/docker-compose.yml) | Jenkins + MongoDB + Mailpit |
 
