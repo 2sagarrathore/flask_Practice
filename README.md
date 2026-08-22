@@ -135,19 +135,25 @@ Defined in [`Jenkinsfile`](Jenkinsfile):
 | **Checkout** | Clones the branch being built and logs the commit under test. |
 | **Build** | Creates a virtualenv, upgrades pip, installs `requirements.txt`, runs `pip check`. |
 | **Test** | Runs pytest against the `mongo` service, emitting JUnit XML and an HTML report. Results are published to Jenkins and archived as build artifacts. |
-| **Deploy to Staging** | *Only on `main` / `staging`, and only if tests passed.* Stops the previous instance, publishes the code to a release directory, installs dependencies into a dedicated venv, and starts gunicorn (2 workers) as a daemon. |
+| **Deploy to Staging** | *Only on `main`, and only if tests passed.* Stops the previous instance, publishes the code to a release directory, installs dependencies into a dedicated venv, and starts gunicorn (2 workers) as a daemon. |
 | **Staging Smoke Test** | Polls the staged app for up to 30s and fails the build unless it returns HTTP 200. Dumps the gunicorn error log on failure. |
 
-The `Deploy to Staging` stage is gated by a `when { anyOf { branch 'main'; branch 'staging' } }`
-block, and Declarative Pipeline stops at the first failing stage — so a failing test
-can never reach deployment.
+The `Deploy to Staging` stage is gated by `when { branch 'main' }`, and Declarative
+Pipeline stops at the first failing stage — so a failing test can never reach
+deployment. Only `main` deploys, because the staging host and port are a single
+shared resource that two branches cannot own at once.
 
-Two MongoDB databases keep environments isolated:
+Databases are kept isolated per environment **and per branch**:
 
 | Environment | Database |
 | --- | --- |
-| Test | `mongodb://mongo:27017/test_student_db` |
+| Test | `mongodb://mongo:27017/test_student_db_<branch>` |
 | Staging | `mongodb://mongo:27017/staging_student_db` |
+
+The per-branch suffix matters: multibranch jobs build in parallel on separate
+executors, and `test_app.py` seeds a record with a hardcoded `_id`. Pointing every
+branch at one test database makes concurrent builds fail with a `DuplicateKeyError`.
+`disableConcurrentBuilds()` covers the same race between two builds of one branch.
 
 The Flask `SECRET_KEY` is **not** committed — it is injected from the Jenkins
 credential `flask-secret-key` via `credentials('flask-secret-key')`.
