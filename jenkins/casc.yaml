@@ -1,0 +1,65 @@
+jenkins:
+  systemMessage: "Flask Practice CI/CD - configured as code"
+  numExecutors: 2
+  scmCheckoutRetryCount: 2
+  mode: NORMAL
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "${JENKINS_ADMIN_ID:-admin}"
+          password: "${JENKINS_ADMIN_PASSWORD:-admin}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: "flask-secret-key"
+              secret: "${FLASK_SECRET_KEY:-change-me-in-jenkins-credentials}"
+              description: "Flask SECRET_KEY injected into staging deployments"
+
+unclassified:
+  location:
+    url: "http://localhost:8080/"
+    adminAddress: "jenkins@example.com"
+  mailer:
+    smtpHost: "mailpit"
+    smtpPort: "1025"
+    charset: "UTF-8"
+  extendedEmailPublisher:
+    mailAccount:
+      smtpHost: "mailpit"
+      smtpPort: "1025"
+    defaultSuffix: "@example.com"
+    defaultContentType: "text/html"
+    defaultRecipients: "devops-team@example.com"
+    defaultTriggerIds:
+      - "hudson.plugins.emailext.plugins.trigger.FailureTrigger"
+      - "hudson.plugins.emailext.plugins.trigger.SuccessTrigger"
+
+jobs:
+  - script: >
+      multibranchPipelineJob('flask-practice-ci-cd') {
+        displayName('Flask Practice CI/CD')
+        branchSources {
+          git {
+            id('flask-practice-origin')
+            remote('https://github.com/2sagarrathore/flask_Practice.git')
+          }
+        }
+        orphanedItemStrategy {
+          discardOldItems {
+            numToKeep(10)
+          }
+        }
+        triggers {
+          periodicFolderTrigger {
+            interval('2m')
+          }
+        }
+      }

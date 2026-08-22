@@ -1,0 +1,333 @@
+name: Flask CI/CD
+
+on:
+  push:
+    branches: [main, staging]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  install-dependencies:
+    name: Install Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+
+      - name: Verify dependency tree is consistent
+        run: pip check
+
+  test:
+    name: Run Tests
+    needs: install-dependencies
+    runs-on: ubuntu-latest
+
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # app.py binds Mongo at import time, so this must be set before pytest runs.
+      MONGO_URI: mongodb://localhost:27017/test_student_db
+      SECRET_KEY: ci-test-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        run: pytest -v --junitxml=reports/junit.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: reports/
+          retention-days: 7
+
+  build:
+    name: Build
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Byte-compile sources
+        run: python -m compileall app.py
+
+      - name: Create deployment package
+        run: |
+          mkdir -p dist
+          tar -czf "dist/flask-practice-${GITHUB_SHA::8}.tar.gz" \
+            app.py templates requirements.txt
+          ls -lh dist/
+
+      - name: Upload deployment package
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-package
+          path: dist/
+          retention-days: 7
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build
+    if: github.ref == 'refs/heads/staging' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Download deployment package
+        uses: actions/download-artifact@v4
+        with:
+          name: app-package
+          path: dist/
+
+      - name: Unpack release
+        run: |
+          mkdir -p release
+          tar -xzf dist/*.tar.gz -C release
+          ls -R release
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install runtime dependencies
+        run: pip install -r release/requirements.txt
+
+      - name: Start application and smoke test
+        working-directory: release
+        env:
+          MONGO_URI: ${{ secrets.STAGING_MONGO_URI || 'mongodb://localhost:27017/staging_student_db' }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY || 'staging-fallback-secret' }}
+        run: |
+          gunicorn app:app --bind 127.0.0.1:5000 --workers 2 --daemon \
+            --pid gunicorn.pid --error-logfile error.log
+          for i in $(seq 1 15); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/ || true)
+            if [ "$code" = "200" ]; then
+              echo "Staging smoke test passed (HTTP $code)"
+              kill "$(cat gunicorn.pid)" || true
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Staging smoke test failed"; cat error.log; exit 1
+
+      - name: Publish to staging host over SSH
+        env:
+          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+        run: |
+          if [ -z "$SSH_HOST" ]; then
+            echo "STAGING_SSH_HOST is not configured - skipping remote publish."
+            echo "Configure the STAGING_SSH_* secrets to enable real host deployment."
+            exit 0
+          fi
+          install -m 600 /dev/null key.pem
+          printf '%s' "$SSH_KEY" > key.pem
+          scp -o StrictHostKeyChecking=accept-new -i key.pem \
+            dist/*.tar.gz "$SSH_USER@$SSH_HOST:/tmp/release.tar.gz"
+          ssh -o StrictHostKeyChecking=accept-new -i key.pem "$SSH_USER@$SSH_HOST" \
+            'sudo systemctl stop flask-staging && \
+             sudo tar -xzf /tmp/release.tar.gz -C /opt/flask-staging && \
+             sudo systemctl start flask-staging'
+          rm -f key.pem
+
+      - name: Deployment summary
+        run: |
+          {
+            echo "### Staging deployment"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Environment | staging |"
+            echo "| Commit | \`${GITHUB_SHA::8}\` |"
+            echo "| Ref | \`${GITHUB_REF}\` |"
+            echo "| Smoke test | passed |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-production:
+    name: Deploy to Production
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Download deployment package
+        uses: actions/download-artifact@v4
+        with:
+          name: app-package
+          path: dist/
+
+      - name: Unpack release
+        run: |
+          mkdir -p release
+          tar -xzf dist/*.tar.gz -C release
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install runtime dependencies
+        run: pip install -r release/requirements.txt
+
+      - name: Start application and smoke test
+        working-directory: release
+        env:
+          MONGO_URI: ${{ secrets.PROD_MONGO_URI || 'mongodb://localhost:27017/prod_student_db' }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY || 'production-fallback-secret' }}
+        run: |
+          gunicorn app:app --bind 127.0.0.1:5000 --workers 2 --daemon \
+            --pid gunicorn.pid --error-logfile error.log
+          for i in $(seq 1 15); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/ || true)
+            if [ "$code" = "200" ]; then
+              echo "Production smoke test passed (HTTP $code)"
+              kill "$(cat gunicorn.pid)" || true
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Production smoke test failed"; cat error.log; exit 1
+
+      - name: Publish to production host over SSH
+        env:
+          SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          SSH_USER: ${{ secrets.PROD_SSH_USER }}
+          SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          if [ -z "$SSH_HOST" ]; then
+            echo "PROD_SSH_HOST is not configured - skipping remote publish."
+            echo "Configure the PROD_SSH_* secrets to enable real host deployment."
+            exit 0
+          fi
+          install -m 600 /dev/null key.pem
+          printf '%s' "$SSH_KEY" > key.pem
+          scp -o StrictHostKeyChecking=accept-new -i key.pem \
+            dist/*.tar.gz "$SSH_USER@$SSH_HOST:/tmp/release.tar.gz"
+          ssh -o StrictHostKeyChecking=accept-new -i key.pem "$SSH_USER@$SSH_HOST" \
+            'sudo systemctl stop flask-prod && \
+             sudo tar -xzf /tmp/release.tar.gz -C /opt/flask-prod && \
+             sudo systemctl start flask-prod'
+          rm -f key.pem
+
+      - name: Deployment summary
+        run: |
+          {
+            echo "### Production deployment"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Environment | production |"
+            echo "| Release tag | \`${GITHUB_REF_NAME}\` |"
+            echo "| Commit | \`${GITHUB_SHA::8}\` |"
+            echo "| Smoke test | passed |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    name: Notify
+    needs: [test, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report pipeline outcome
+        run: |
+          echo "Tests:  ${{ needs.test.result }}"
+          echo "Build:  ${{ needs.build.result }}"
+
+      - name: Send email notification
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          NOTIFY_TO: ${{ secrets.NOTIFY_EMAIL }}
+        if: env.SMTP_SERVER != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: 465
+          secure: true
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          from: GitHub Actions
+          to: ${{ secrets.NOTIFY_EMAIL }}
+          subject: "${{ needs.test.result == 'success' && needs.build.result == 'success' && 'SUCCESS' || 'FAILURE' }}: ${{ github.repository }} run ${{ github.run_number }}"
+          body: |
+            Repository: ${{ github.repository }}
+            Ref:        ${{ github.ref }}
+            Commit:     ${{ github.sha }}
+            Tests:      ${{ needs.test.result }}
+            Build:      ${{ needs.build.result }}
+            Run:        ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

@@ -1,0 +1,14 @@
+configuration-as-code
+workflow-aggregator
+workflow-multibranch
+git
+github
+github-branch-source
+job-dsl
+email-ext
+mailer
+junit
+htmlpublisher
+ws-cleanup
+timestamper
+credentials-binding
