@@ -1,22 +1,25 @@
 #!/bin/bash
-cd ~/flask_Practice
+# Local development helper. Reads configuration from .env (see .env.example).
+# Never hardcode database credentials in this file.
+set -euo pipefail
 
-# Create venv if not exists
+cd "$(dirname "$0")"
+
+if [ ! -f .env ]; then
+    echo "No .env found. Copy .env.example to .env and fill in your values." >&2
+    exit 1
+fi
+
 if [ ! -d venv ]; then
     python3 -m venv venv
 fi
 
-# Activate venv
-source venv/bin/activate
+./venv/bin/pip install --upgrade pip wheel
+./venv/bin/pip install -r requirements.txt
 
-# Upgrade pip and install dependencies
-sudo apt update
-sudo apt install python3-pip -y
-sudo pip install --upgrade pip
-sudo pip install -r requirements.txt black pylint bandit pytest pytest-html
+set -a
+# shellcheck disable=SC1091
+source .env
+set +a
 
-# Ensure .env exists
-echo -e "MONGO_URI=mongodb+srv://mohan:Herovired123@herovired.f3do4.mongodb.net/studentDB\nSECRET_KEY=your-secret-key" > .env
-
-# Run app
-sudo nohup python3 app.py --host=0.0.0.0 --port=5000 > flask.log 2>&1 &
+exec ./venv/bin/gunicorn app:app --bind "0.0.0.0:${PORT:-5000}" --workers 2

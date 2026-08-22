@@ -1,5 +1,6 @@
 Flask
 Flask-PyMongo
+gunicorn
 python-dotenv
 pymongo
 certifi
