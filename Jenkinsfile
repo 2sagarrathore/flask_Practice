@@ -5,6 +5,7 @@ pipeline {
         timestamps()
         timeout(time: 20, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '20'))
+        disableConcurrentBuilds()
     }
 
     triggers {
@@ -14,7 +15,9 @@ pipeline {
 
     environment {
         VENV              = "${WORKSPACE}/.venv"
-        TEST_MONGO_URI    = 'mongodb://mongo:27017/test_student_db'
+        // Branch jobs run in parallel on separate executors, and the pytest fixture
+        // seeds a fixed _id, so a shared database makes concurrent branches collide.
+        TEST_MONGO_URI    = "mongodb://mongo:27017/test_student_db_${env.BRANCH_NAME.replaceAll('[^A-Za-z0-9_]', '_')}"
         STAGING_MONGO_URI = 'mongodb://mongo:27017/staging_student_db'
         STAGING_HOME      = '/var/jenkins_home/staging/flask_practice'
         STAGING_PORT      = '5000'
@@ -68,10 +71,7 @@ pipeline {
 
         stage('Deploy to Staging') {
             when {
-                anyOf {
-                    branch 'main'
-                    branch 'staging'
-                }
+                branch 'main'
             }
             environment {
                 MONGO_URI = "${STAGING_MONGO_URI}"
@@ -111,10 +111,7 @@ pipeline {
 
         stage('Staging Smoke Test') {
             when {
-                anyOf {
-                    branch 'main'
-                    branch 'staging'
-                }
+                branch 'main'
             }
             steps {
                 sh '''
